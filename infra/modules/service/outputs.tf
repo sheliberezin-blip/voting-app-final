@@ -1,1 +1,3 @@
-# Outputs of the service module
+output "service_name" {
+  value = aws_ecs_service.this.name
+}
