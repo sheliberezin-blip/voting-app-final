@@ -1,0 +1,67 @@
+name: Deploy one environment
+
+on:
+  workflow_call:
+    inputs:
+      env:
+        required: true
+        type: string
+      image_tag:
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.env }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env }}
+    defaults:
+      run:
+        working-directory: infra
+    env:
+      TF_VARS: >-
+        -var-file=envs/${{ inputs.env }}.tfvars
+        -var=env=${{ inputs.env }}
+        -var=name_prefix=${{ vars.NAME_PREFIX }}
+        -var=image_tag=${{ inputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: eu-north-1
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - name: init
+        run: |
+          terraform init -input=false -no-color \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=voting-app/${{ inputs.env }}/terraform.tfstate" \
+            -backend-config="region=eu-north-1" \
+            -backend-config="use_lockfile=true"
+      - name: apply
+        run: terraform apply -auto-approve -input=false -no-color $TF_VARS
+      - name: smoke test
+        run: |
+          VOTE=$(terraform output -raw vote_url)
+          RESULT=$(terraform output -raw result_url)
+          for u in "$VOTE" "$RESULT"; do
+            curl --fail -s -o /dev/null --retry 10 --retry-delay 6 --retry-all-errors "$u/healthz"
+          done
+      - name: version check
+        run: |
+          set +e
+          terraform plan -detailed-exitcode -input=false -no-color $TF_VARS
+          code=$?
+          if [ "$code" -ne 0 ]; then
+            echo "Version check failed (exit $code): deployment probably rolled back"
+            exit 1
+          fi

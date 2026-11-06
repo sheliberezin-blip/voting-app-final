@@ -1,140 +1,118 @@
 name: Deploy Voting App
 
 on:
+  pull_request:
+    branches: [main]
+    paths: ['services/**', 'infra/**', '.github/workflows/**']
   push:
     branches: [main]
+    paths: ['services/**', 'infra/**', '.github/workflows/**']
   workflow_dispatch:
 
 permissions:
   id-token: write
   contents: read
 
+env:
+  AWS_REGION: eu-north-1
+
 jobs:
-  detect-changes:
+  checks:
     runs-on: ubuntu-latest
-    outputs:
-      vote: ${{ steps.filter.outputs.vote }}
-      result: ${{ steps.filter.outputs.result }}
-      worker: ${{ steps.filter.outputs.worker }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
+      - uses: hashicorp/setup-terraform@v3
         with:
-          filters: |
-            vote:
-              - 'services/vote/**'
-            result:
-              - 'services/result/**'
-            worker:
-              - 'services/worker/**'
+          terraform_wrapper: false
+      - name: fmt
+        run: terraform fmt -check -recursive -no-color
+        working-directory: infra
+      - name: validate
+        working-directory: infra
+        run: |
+          terraform init -backend=false -input=false -no-color
+          terraform validate -no-color
 
-  build-and-push:
+  build:
+    needs: checks
     runs-on: ubuntu-latest
-    needs: detect-changes
-    permissions:
-      id-token: write
-      contents: read
+    strategy:
+      matrix:
+        service: [vote, result, worker]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: eu-north-1
-
-      - name: Login to ECR
-        id: ecr-login
+          aws-region: ${{ env.AWS_REGION }}
+      - id: ecr
         uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build and push vote
-        env:
-          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Check if tag exists
+        id: exists
         run: |
-          docker build -t $REGISTRY/${{ vars.NAME_PREFIX }}-vote:${{ github.sha }} services/vote
-          docker push $REGISTRY/${{ vars.NAME_PREFIX }}-vote:${{ github.sha }}
+          if aws ecr describe-images --repository-name "${{ vars.NAME_PREFIX }}-${{ matrix.service }}" \
+               --image-ids imageTag=${{ github.sha }} >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build (push only on main)
+        if: steps.exists.outputs.found == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: services/${{ matrix.service }}
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.ecr.outputs.registry }}/${{ vars.NAME_PREFIX }}-${{ matrix.service }}:${{ github.sha }}
 
-      - name: Build and push result
-        env:
-          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
-        run: |
-          docker build -t $REGISTRY/${{ vars.NAME_PREFIX }}-result:${{ github.sha }} services/result
-          docker push $REGISTRY/${{ vars.NAME_PREFIX }}-result:${{ github.sha }}
-
-      - name: Build and push worker
-        env:
-          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
-        run: |
-          docker build -t $REGISTRY/${{ vars.NAME_PREFIX }}-worker:${{ github.sha }} services/worker
-          docker push $REGISTRY/${{ vars.NAME_PREFIX }}-worker:${{ github.sha }}
-
-  terraform-apply-dev:
+  plan:
+    if: github.event_name == 'pull_request'
+    needs: build
     runs-on: ubuntu-latest
-    needs: build-and-push
-    environment: dev
-    permissions:
-      id-token: write
-      contents: read
-    defaults:
-      run:
-        working-directory: infra
+    strategy:
+      matrix:
+        env: [dev, prod]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: eu-north-1
-
+          aws-region: ${{ env.AWS_REGION }}
       - uses: hashicorp/setup-terraform@v3
-
-      - name: Terraform init
-        run: |
-          terraform init \
-            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
-            -backend-config="key=voting-app/dev/terraform.tfstate" \
-            -backend-config="region=eu-north-1" \
-            -backend-config="use_lockfile=true"
-
-      - name: Terraform apply
-        run: |
-          terraform apply -auto-approve \
-            -var-file=envs/dev.tfvars \
-            -var="image_tag=${{ github.sha }}"
-
-  terraform-apply-prod:
-    runs-on: ubuntu-latest
-    needs: terraform-apply-dev
-    environment: prod
-    permissions:
-      id-token: write
-      contents: read
-    defaults:
-      run:
+        with:
+          terraform_wrapper: false
+      - name: init
         working-directory: infra
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: eu-north-1
-
-      - uses: hashicorp/setup-terraform@v3
-
-      - name: Terraform init
         run: |
-          terraform init \
+          terraform init -input=false -no-color \
             -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
-            -backend-config="key=voting-app/prod/terraform.tfstate" \
-            -backend-config="region=eu-north-1" \
+            -backend-config="key=voting-app/${{ matrix.env }}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
             -backend-config="use_lockfile=true"
-
-      - name: Terraform apply
+      - name: plan
+        working-directory: infra
         run: |
-          terraform apply -auto-approve \
-            -var-file=envs/prod.tfvars \
+          terraform plan -input=false -no-color -lock=false \
+            -var-file=envs/${{ matrix.env }}.tfvars \
+            -var="env=${{ matrix.env }}" \
+            -var="name_prefix=${{ vars.NAME_PREFIX }}" \
             -var="image_tag=${{ github.sha }}"
+
+  deploy-dev:
+    if: github.event_name != 'pull_request'
+    needs: build
+    uses: ./.github/workflows/deploy-env.yml
+    with:
+      env: dev
+      image_tag: ${{ github.sha }}
+    secrets: inherit
+
+  deploy-prod:
+    if: github.event_name != 'pull_request'
+    needs: deploy-dev
+    uses: ./.github/workflows/deploy-env.yml
+    with:
+      env: prod
+      image_tag: ${{ github.sha }}
+    secrets: inherit

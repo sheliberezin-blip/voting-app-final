@@ -9,15 +9,15 @@ resource "aws_ecs_cluster" "main" {
 module "vote" {
   source = "./modules/service"
 
-  name                = "${local.name}-vote"
-  cluster_id          = aws_ecs_cluster.main.id
-  image               = "${data.aws_ecr_repository.vote.repository_url}:${var.image_tag}"
-  subnet_ids          = [for s in aws_subnet.public : s.id]
-  security_group_ids  = [aws_security_group.ecs.id]
-  execution_role_arn  = aws_iam_role.ecs_execution.arn
-  container_port      = 80
-  target_group_arn    = aws_lb_target_group.vote.arn
-  desired_count        = var.env == "prod" ? 2 : 1
+  name               = "${local.name}-vote"
+  cluster_id         = aws_ecs_cluster.main.id
+  image              = "${data.aws_ecr_repository.vote.repository_url}:${var.image_tag}"
+  subnet_ids         = [for s in aws_subnet.public : s.id]
+  security_group_ids = [aws_security_group.ecs.id]
+  execution_role_arn = aws_iam_role.ecs_execution.arn
+  container_port     = 80
+  target_group_arn   = aws_lb_target_group.vote.arn
+  desired_count      = var.env == "prod" ? 2 : 1
 
   environment = {
     REDIS_HOST     = aws_elasticache_cluster.main.cache_nodes[0].address
@@ -32,15 +32,15 @@ module "vote" {
 module "result" {
   source = "./modules/service"
 
-  name                = "${local.name}-result"
-  cluster_id          = aws_ecs_cluster.main.id
-  image               = "${data.aws_ecr_repository.result.repository_url}:${var.image_tag}"
-  subnet_ids          = [for s in aws_subnet.public : s.id]
-  security_group_ids  = [aws_security_group.ecs.id]
-  execution_role_arn  = aws_iam_role.ecs_execution.arn
-  container_port      = 80
-  target_group_arn    = aws_lb_target_group.result.arn
-  desired_count        = var.env == "prod" ? 2 : 1
+  name               = "${local.name}-result"
+  cluster_id         = aws_ecs_cluster.main.id
+  image              = "${data.aws_ecr_repository.result.repository_url}:${var.image_tag}"
+  subnet_ids         = [for s in aws_subnet.public : s.id]
+  security_group_ids = [aws_security_group.ecs.id]
+  execution_role_arn = aws_iam_role.ecs_execution.arn
+  container_port     = 80
+  target_group_arn   = aws_lb_target_group.result.arn
+  desired_count      = var.env == "prod" ? 2 : 1
 
   environment = {
     DB_HOST        = aws_db_instance.main.address
@@ -61,13 +61,13 @@ module "result" {
 module "worker" {
   source = "./modules/service"
 
-  name                = "${local.name}-worker"
-  cluster_id          = aws_ecs_cluster.main.id
-  image               = "${data.aws_ecr_repository.worker.repository_url}:${var.image_tag}"
-  subnet_ids          = [for s in aws_subnet.public : s.id]
-  security_group_ids  = [aws_security_group.ecs.id]
-  execution_role_arn  = aws_iam_role.ecs_execution.arn
-  desired_count        = var.env == "prod" ? 2 : 1
+  name               = "${local.name}-worker"
+  cluster_id         = aws_ecs_cluster.main.id
+  image              = "${data.aws_ecr_repository.worker.repository_url}:${var.image_tag}"
+  subnet_ids         = [for s in aws_subnet.public : s.id]
+  security_group_ids = [aws_security_group.ecs.id]
+  execution_role_arn = aws_iam_role.ecs_execution.arn
+  desired_count      = var.env == "prod" ? 2 : 1
 
   environment = {
     REDIS_HOST = aws_elasticache_cluster.main.cache_nodes[0].address
